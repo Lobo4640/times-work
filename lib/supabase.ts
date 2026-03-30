@@ -1,7 +1,12 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = process.env.'https://zvirjbjzumxhzfxgmgoq.supabase.co'
-const supabaseAnonKey = process.env.'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp2aXJqYmp6dW14aHpmeGdtZ29xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4Nzc3ODIsImV4cCI6MjA5MDQ1Mzc4Mn0.59F45Ooj1aOJpWq86mxRZlop2rm7fzxWJlgpPjlWHyQ'
+// Esto evita que el build falle si la variable tarda en cargar
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://zvirjbjzumxhzfxgmgoq.supabase.co'
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp2aXJqYmp6dW14aHpmeGdtZ29xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4Nzc3ODIsImV4cCI6MjA5MDQ1Mzc4Mn0.59F45Ooj1aOJpWq86mxRZlop2rm7fzxWJlgpPjlWHyQ'
+if (!supabaseUrl) {
+  console.error("Falta la URL de Supabase");
+}
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     persistSession: true,
