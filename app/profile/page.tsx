@@ -7,8 +7,7 @@ import {
 import BottomNav from '@/components/BottomNav'
 import Logo from '@/components/Logo'
 import { supabase, Profile } from '@/lib/supabase'
-
-const LEGAL_LINKS = [
+export const dynamic = 'force-dynamic';const LEGAL_LINKS = [
   { icon: '⚖️', title: 'Jornada Efectiva de Trabajo', desc: 'Art. 34 ET · Límites y cómputo anual', url: 'https://www.boe.es/buscar/act.php?id=BOE-A-2015-11430' },
   { icon: '⏱️', title: 'Horas Extraordinarias', desc: 'Art. 35 ET · Máximos y compensación', url: 'https://www.boe.es/buscar/act.php?id=BOE-A-2015-11430' },
   { icon: '☕', title: 'Descansos Obligatorios', desc: 'Art. 34.4 ET · Pausas en jornada > 6h', url: 'https://www.boe.es/buscar/act.php?id=BOE-A-2015-11430' },
