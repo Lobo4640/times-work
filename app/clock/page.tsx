@@ -1,6 +1,7 @@
 'use client'
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { Satellite, Play, Pause, Square, AlertCircle, CheckCircle } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { useRouter } from 'next/navigation'
+import { Satellite, Play, Pause, Square, AlertCircle, CheckCircle, Loader2 } from 'lucide-react'
 import BottomNav from '@/components/BottomNav'
 import Logo from '@/components/Logo'
 import { supabase } from '@/lib/supabase'
@@ -13,8 +14,10 @@ import {
   computeElapsed,
   generateSessionId,
 } from '@/lib/timeUtils'
+
 export const dynamic = 'force-dynamic'
-  type GpsStatus = 'idle' | 'acquiring' | 'fixed' | 'error'
+
+type GpsStatus = 'idle' | 'acquiring' | 'fixed' | 'error'
 
 interface GeoData {
   latitude: number
@@ -54,6 +57,8 @@ async function logEvent(
 }
 
 export default function ClockPage() {
+  const router = useRouter()
+  const [isAuthLoading, setIsAuthLoading] = useState(true)
   const [state, setState] = useState<ClockState>({
     status: 'idle',
     sessionId: null,
@@ -63,6 +68,7 @@ export default function ClockPage() {
     elapsedSeconds: 0,
     lastEventId: null,
   })
+  
   const [display, setDisplay] = useState('00:00:00')
   const [gpsStatus, setGpsStatus] = useState<GpsStatus>('idle')
   const [gpsCoords, setGpsCoords] = useState<GeoData | null>(null)
@@ -71,25 +77,40 @@ export default function ClockPage() {
   const intervalRef = useRef<NodeJS.Timeout | null>(null)
   const notifiedRef = useRef({ at4h: false, at8h: false })
 
+  // --- PROTECCIÓN DE RUTA ---
+  useEffect(() => {
+    const checkUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        router.push('/profile') // Ajusta esta ruta a tu pantalla de Login
+      } else {
+        setIsAuthLoading(false)
+      }
+    }
+    checkUser()
+  }, [router])
+
   // Load persisted state
   useEffect(() => {
+    if (isAuthLoading) return
     const saved = loadClockState()
     if (saved && saved.status !== 'ended' && saved.status !== 'idle') {
       setState(saved)
       notifiedRef.current = { at4h: false, at8h: false }
     }
-  }, [])
+  }, [isAuthLoading])
 
   // Acquire GPS on mount
   useEffect(() => {
+    if (isAuthLoading) return
     setGpsStatus('acquiring')
     getLocation().then(geo => {
       if (geo) { setGpsCoords(geo); setGpsStatus('fixed') }
       else setGpsStatus('error')
     })
-  }, [])
+  }, [isAuthLoading])
 
-  // Tick
+  // Tick logic
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current)
 
@@ -98,15 +119,14 @@ export default function ClockPage() {
         const elapsed = computeElapsed(state)
         setDisplay(formatDurationWithSeconds(elapsed))
 
-        // Push notifications via Service Worker
         if (state.status === 'running') {
-          if (elapsed >= 3 * 3600 + 45 * 60 && !notifiedRef.current.at4h) {
+          if (elapsed >= 13500 && !notifiedRef.current.at4h) { // 3h 45min
             notifiedRef.current.at4h = true
-            sendNotification('⏰ Aviso: 15min para las 4 horas de jornada', 'Recuerda tu derecho a descanso (Art. 34 ET)')
+            sendNotification('⏰ Aviso: 15min para descanso', 'Art. 34 ET')
           }
-          if (elapsed >= 7 * 3600 + 45 * 60 && !notifiedRef.current.at8h) {
+          if (elapsed >= 27900 && !notifiedRef.current.at8h) { // 7h 45min
             notifiedRef.current.at8h = true
-            sendNotification('⏰ Aviso: 15min para las 8 horas de jornada', 'Jornada máxima legal próxima (RD 8/2019)')
+            sendNotification('⏰ Aviso: 15min para fin de jornada', 'RD 8/2019')
           }
         }
       }, 1000)
@@ -124,7 +144,7 @@ export default function ClockPage() {
 
   function sendNotification(title: string, body: string) {
     if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification(title, { body, icon: '/icon.png', badge: '/icon.png' })
+      new Notification(title, { body })
     }
   }
 
@@ -151,8 +171,6 @@ export default function ClockPage() {
       lastEventId: null,
     }
     setState(newState)
-    notifiedRef.current = { at4h: false, at8h: false }
-
     await logEvent(sessionId, 'start', geo)
     if ('Notification' in window) Notification.requestPermission()
     showToast('Jornada iniciada ✓', 'ok')
@@ -163,16 +181,13 @@ export default function ClockPage() {
     if (loading || state.status !== 'running') return
     setLoading(true)
     const geo = await getLocation()
-
-    const now = Date.now()
     const newState: ClockState = {
       ...state,
       status: 'paused',
-      pauseStartTimestamp: now,
+      pauseStartTimestamp: Date.now(),
       elapsedSeconds: computeElapsed(state),
     }
     setState(newState)
-
     await logEvent(state.sessionId!, 'pause', geo)
     showToast('Pausa registrada ✓', 'ok')
     setLoading(false)
@@ -182,7 +197,6 @@ export default function ClockPage() {
     if (loading || state.status !== 'paused') return
     setLoading(true)
     const geo = await getLocation()
-
     const pausedDuration = state.pauseStartTimestamp
       ? Math.floor((Date.now() - state.pauseStartTimestamp) / 1000)
       : 0
@@ -194,7 +208,6 @@ export default function ClockPage() {
       totalPausedSeconds: state.totalPausedSeconds + pausedDuration,
     }
     setState(newState)
-
     await logEvent(state.sessionId!, 'resume', geo)
     showToast('Jornada reanudada ✓', 'ok')
     setLoading(false)
@@ -204,15 +217,9 @@ export default function ClockPage() {
     if (loading || state.status === 'idle' || state.status === 'ended') return
     setLoading(true)
     const geo = await getLocation()
-
     const finalElapsed = computeElapsed(state)
-    const newState: ClockState = {
-      ...state,
-      status: 'ended',
-      elapsedSeconds: finalElapsed,
-    }
+    const newState: ClockState = { ...state, status: 'ended', elapsedSeconds: finalElapsed }
     setState(newState)
-
     await logEvent(state.sessionId!, 'end', geo)
     showToast('Jornada finalizada ✓', 'ok')
 
@@ -227,6 +234,15 @@ export default function ClockPage() {
     setLoading(false)
   }
 
+  if (isAuthLoading) {
+    return (
+      <div className="h-screen w-full bg-black flex flex-col items-center justify-center gap-4">
+        <Loader2 className="w-10 h-10 text-gold animate-spin" />
+        <p className="text-gold font-display tracking-widest text-sm">VERIFICANDO IDENTIDAD</p>
+      </div>
+    )
+  }
+
   const digitClass = state.status === 'running'
     ? 'clock-digit animate-pulse-glow'
     : state.status === 'paused'
@@ -236,243 +252,78 @@ export default function ClockPage() {
   const [hh, mm, ss] = display.split(':')
 
   return (
-    <div className="flex flex-col flex-1 overflow-hidden">
-      {/* Main content */}
-      <div className="flex-1 relative overflow-hidden bg-black">
-        {/* Background glow */}
-        {state.status === 'running' && (
-          <div
-            className="absolute inset-0 pointer-events-none"
-            style={{
-              background: 'radial-gradient(ellipse at 50% 60%, rgba(0,229,255,0.06) 0%, transparent 65%)',
-            }}
-          />
-        )}
-        {state.status === 'paused' && (
-          <div
-            className="absolute inset-0 pointer-events-none"
-            style={{
-              background: 'radial-gradient(ellipse at 50% 60%, rgba(245,158,11,0.05) 0%, transparent 65%)',
-            }}
-          />
-        )}
-
-        {/* Watermark logo */}
-        <div className="absolute top-0 right-0 left-0 flex justify-center pt-4 opacity-10 pointer-events-none select-none">
-          <Logo size="xl" />
+    <div className="flex flex-col h-screen overflow-hidden bg-black grain">
+      <div className="flex-1 relative flex flex-col px-6 py-4">
+        {/* Glow Effects */}
+        <div className={`absolute inset-0 pointer-events-none transition-opacity duration-1000 ${state.status === 'running' ? 'opacity-100' : 'opacity-0'}`}
+          style={{ background: 'radial-gradient(circle at 50% 50%, rgba(0,229,255,0.07) 0%, transparent 70%)' }} />
+        
+        <div className="flex justify-between items-center z-10">
+          <Logo size="sm" showText />
+          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold border transition-all ${gpsStatus === 'fixed' ? 'border-cyan-active/30 bg-cyan-active/10 text-cyan-active' : 'border-white/10 text-white/40'}`}>
+            <Satellite size={12} className={gpsStatus === 'fixed' ? 'animate-pulse' : ''} />
+            {gpsStatus === 'fixed' ? 'GPS FIJADO' : 'BUSCANDO GPS...'}
+          </div>
         </div>
 
-        <div className="flex flex-col items-center justify-between h-full px-6 py-4 relative z-10">
+        <div className="flex-1 flex flex-col items-center justify-center gap-8 z-10">
+           <div className="text-[10px] tracking-[0.4em] uppercase text-white/40 font-bold">
+              {state.status === 'running' ? '● Jornada Activa' : state.status === 'paused' ? '⏸ En Pausa' : '○ Standby'}
+           </div>
 
-          {/* Top bar */}
-          <div className="w-full flex items-center justify-between pt-2">
-            <Logo size="sm" showText />
-            <div className="flex items-center gap-2">
-              <div
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold tracking-wider ${gpsStatus === 'fixed' ? 'animate-blink' : ''}`}
-                style={{
-                  background: gpsStatus === 'fixed' ? 'rgba(0,229,255,0.08)' : 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${gpsStatus === 'fixed' ? 'rgba(0,229,255,0.3)' : 'rgba(255,255,255,0.08)'}`,
-                  color: gpsStatus === 'fixed' ? '#00E5FF' : gpsStatus === 'error' ? '#EF4444' : '#6B7280',
-                }}
-              >
-                <Satellite size={12} />
-                <span>{gpsStatus === 'fixed' ? 'GPS Fijado' : gpsStatus === 'acquiring' ? 'Buscando...' : gpsStatus === 'error' ? 'Sin GPS' : 'GPS'}</span>
-              </div>
-            </div>
-          </div>
+           <div className="flex items-baseline font-mono">
+              <span className={digitClass + " text-8xl"}>{hh}</span>
+              <span className="text-6xl mx-1 opacity-50 animate-tick">:</span>
+              <span className={digitClass + " text-8xl"}>{mm}</span>
+              <span className="text-4xl ml-2 opacity-30 self-end mb-3">{ss}</span>
+           </div>
 
-          {/* Clock display */}
-          <div className="flex flex-col items-center gap-4">
-            {/* Status label */}
-            <div
-              className="text-xs tracking-[0.3em] uppercase font-medium"
-              style={{
-                color: state.status === 'running' ? '#00E5FF' : state.status === 'paused' ? '#F59E0B' : state.status === 'ended' ? '#10B981' : '#4A4A5A',
-              }}
-            >
-              {state.status === 'running' ? '● Jornada Activa'
-                : state.status === 'paused' ? '⏸ En Pausa'
-                : state.status === 'ended' ? '✓ Jornada Finalizada'
-                : '○ Sin Jornada Activa'}
-            </div>
+           {gpsCoords && state.status !== 'idle' && (
+             <div className="text-[10px] font-mono text-white/20 bg-white/5 px-3 py-1 rounded-full border border-white/5">
+               {gpsCoords.latitude.toFixed(5)}, {gpsCoords.longitude.toFixed(5)} (±{Math.round(gpsCoords.accuracy)}m)
+             </div>
+           )}
+        </div>
 
-            {/* Giant clock */}
-            <div className="flex items-baseline gap-1">
-              <span className={`text-8xl font-black ${digitClass}`} style={{ fontFamily: 'var(--font-mono)' }}>
-                {hh}
-              </span>
-              <span
-                className="text-7xl font-black"
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  color: state.status === 'running' ? '#00E5FF' : state.status === 'paused' ? '#F59E0B' : '#4A4A5A',
-                  animation: state.status === 'running' ? 'tick 1s steps(1) infinite' : 'none',
-                }}
-              >
-                :
-              </span>
-              <span className={`text-8xl font-black ${digitClass}`} style={{ fontFamily: 'var(--font-mono)' }}>
-                {mm}
-              </span>
-              <span
-                className="text-7xl font-black"
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  color: state.status === 'running' ? '#00E5FF' : state.status === 'paused' ? '#F59E0B' : '#4A4A5A',
-                  animation: state.status === 'running' ? 'tick 1s steps(1) infinite' : 'none',
-                }}
-              >
-                :
-              </span>
-              <span
-                className="text-5xl font-black"
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  color: state.status === 'running' ? 'rgba(0,229,255,0.6)' : state.status === 'paused' ? 'rgba(245,158,11,0.6)' : '#2A2A3A',
-                  alignSelf: 'flex-end',
-                  marginBottom: '8px',
-                }}
-              >
-                {ss}
-              </span>
-            </div>
+        <div className="space-y-4 pb-24 z-10">
+          {state.status === 'idle' && (
+            <button onClick={handleStart} disabled={loading} className="w-full h-16 rounded-2xl bg-gradient-to-br from-green-600 to-green-800 text-white font-bold tracking-widest uppercase shadow-[0_0_30px_rgba(22,163,74,0.3)] active:scale-95 transition-all flex items-center justify-center gap-3">
+              <Play fill="white" size={20} /> Iniciar Jornada
+            </button>
+          )}
 
-            {/* HH:MM label */}
-            <div className="text-[10px] tracking-[0.5em] uppercase" style={{ color: '#2A2A4A' }}>
-              Horas · Minutos · Segundos
-            </div>
-
-            {/* GPS coords */}
-            {gpsCoords && state.status !== 'idle' && (
-              <div
-                className="flex items-center gap-1.5 text-xs px-4 py-1.5 rounded-full"
-                style={{ background: 'rgba(0,229,255,0.04)', border: '1px solid rgba(0,229,255,0.1)', color: '#4A8A90' }}
-              >
-                <span>📍</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
-                  {gpsCoords.latitude.toFixed(4)}, {gpsCoords.longitude.toFixed(4)} ±{Math.round(gpsCoords.accuracy)}m
-                </span>
-              </div>
-            )}
-          </div>
-
-          {/* Control buttons */}
-          <div className="w-full space-y-3 pb-2">
-            {state.status === 'idle' && (
-              <button
-                onClick={handleStart}
-                disabled={loading}
-                className="w-full h-16 rounded-2xl font-bold text-lg tracking-widest uppercase flex items-center justify-center gap-3 transition-all duration-200 active:scale-95"
-                style={{
-                  background: 'linear-gradient(135deg, #16A34A, #15803D)',
-                  boxShadow: '0 0 30px rgba(22,163,74,0.35), inset 0 1px 0 rgba(255,255,255,0.1)',
-                  color: '#fff',
-                }}
-              >
-                <Play size={22} fill="white" />
-                Iniciar Jornada
+          {state.status === 'running' && (
+            <div className="flex gap-3">
+              <button onClick={handlePause} className="flex-1 h-16 rounded-2xl bg-amber-600 text-white font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
+                <Pause fill="white" size={20} /> Pausa
               </button>
-            )}
-
-            {state.status === 'running' && (
-              <div className="flex gap-3">
-                <button
-                  onClick={handlePause}
-                  disabled={loading}
-                  className="flex-1 h-16 rounded-2xl font-bold text-base tracking-widest uppercase flex items-center justify-center gap-2 transition-all duration-200 active:scale-95"
-                  style={{
-                    background: 'linear-gradient(135deg, #D97706, #B45309)',
-                    boxShadow: '0 0 24px rgba(217,119,6,0.3)',
-                    color: '#fff',
-                  }}
-                >
-                  <Pause size={20} fill="white" />
-                  Pausa
-                </button>
-                <button
-                  onClick={handleEnd}
-                  disabled={loading}
-                  className="flex-1 h-16 rounded-2xl font-bold text-base tracking-widest uppercase flex items-center justify-center gap-2 transition-all duration-200 active:scale-95"
-                  style={{
-                    background: 'linear-gradient(135deg, #DC2626, #B91C1C)',
-                    boxShadow: '0 0 24px rgba(220,38,38,0.3)',
-                    color: '#fff',
-                  }}
-                >
-                  <Square size={20} fill="white" />
-                  Finalizar
-                </button>
-              </div>
-            )}
-
-            {state.status === 'paused' && (
-              <div className="flex gap-3">
-                <button
-                  onClick={handleResume}
-                  disabled={loading}
-                  className="flex-1 h-16 rounded-2xl font-bold text-base tracking-widest uppercase flex items-center justify-center gap-2 transition-all duration-200 active:scale-95"
-                  style={{
-                    background: 'linear-gradient(135deg, #16A34A, #15803D)',
-                    boxShadow: '0 0 24px rgba(22,163,74,0.3)',
-                    color: '#fff',
-                  }}
-                >
-                  <Play size={20} fill="white" />
-                  Reanudar
-                </button>
-                <button
-                  onClick={handleEnd}
-                  disabled={loading}
-                  className="flex-1 h-16 rounded-2xl font-bold text-base tracking-widest uppercase flex items-center justify-center gap-2 transition-all duration-200 active:scale-95"
-                  style={{
-                    background: 'linear-gradient(135deg, #DC2626, #B91C1C)',
-                    boxShadow: '0 0 24px rgba(220,38,38,0.3)',
-                    color: '#fff',
-                  }}
-                >
-                  <Square size={20} fill="white" />
-                  Finalizar
-                </button>
-              </div>
-            )}
-
-            {state.status === 'ended' && (
-              <div
-                className="w-full h-16 rounded-2xl flex items-center justify-center gap-3"
-                style={{ background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.3)', color: '#10B981' }}
-              >
-                <CheckCircle size={22} />
-                <span className="font-bold tracking-widest uppercase">Jornada Registrada</span>
-              </div>
-            )}
-
-            {/* Legal notice */}
-            <div
-              className="text-center text-xs py-2"
-              style={{ color: '#2A2A4A', letterSpacing: '0.05em' }}
-            >
-              🔒 Registro inalterable · RD 8/2019 · GPS + Timestamp Servidor
+              <button onClick={handleEnd} className="flex-1 h-16 rounded-2xl bg-red-600 text-white font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
+                <Square fill="white" size={20} /> Finalizar
+              </button>
             </div>
-          </div>
+          )}
+
+          {state.status === 'paused' && (
+            <div className="flex gap-3">
+              <button onClick={handleResume} className="flex-1 h-16 rounded-2xl bg-green-600 text-white font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
+                <Play fill="white" size={20} /> Reanudar
+              </button>
+              <button onClick={handleEnd} className="flex-1 h-16 rounded-2xl bg-red-600 text-white font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
+                <Square fill="white" size={20} /> Finalizar
+              </button>
+            </div>
+          )}
+
+          <p className="text-[9px] text-center text-white/20 tracking-tighter uppercase font-medium">
+            Registro Legal RD 8/2019 • Encriptación AES-256 • Geo-Verificado
+          </p>
         </div>
       </div>
 
-      {/* Toast */}
       {toast && (
-        <div
-          className="absolute left-4 right-4 rounded-2xl px-4 py-3 flex items-center gap-2 text-sm font-medium animate-in"
-          style={{
-            bottom: '90px',
-            zIndex: 50,
-            background: toast.type === 'ok' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
-            border: `1px solid ${toast.type === 'ok' ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)'}`,
-            color: toast.type === 'ok' ? '#10B981' : '#EF4444',
-            backdropFilter: 'blur(12px)',
-          }}
-        >
-          {toast.type === 'ok' ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
-          {toast.msg}
+        <div className="absolute bottom-24 left-6 right-6 p-4 rounded-xl backdrop-blur-xl border border-white/10 flex items-center gap-3 animate-slide-up z-50 bg-surface-card/80">
+          {toast.type === 'ok' ? <CheckCircle className="text-green-500" size={18} /> : <AlertCircle className="text-red-500" size={18} />}
+          <span className="text-sm font-medium">{toast.msg}</span>
         </div>
       )}
 
