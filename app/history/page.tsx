@@ -7,7 +7,7 @@ import BottomNav from '@/components/BottomNav'
 import { supabase, TimeLog, Profile } from '@/lib/supabase'
 import { generateDailyPDF, generateMonthlyPDF, shareBlob } from '@/lib/pdfGenerator'
 import { formatDuration, formatTime } from '@/lib/timeUtils'
-
+export const dynamic = 'force-dynamic';
 interface DailyRecord {
   date: string
   sessionId: string
