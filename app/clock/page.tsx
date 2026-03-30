@@ -13,8 +13,8 @@ import {
   computeElapsed,
   generateSessionId,
 } from '@/lib/timeUtils'
-
-type GpsStatus = 'idle' | 'acquiring' | 'fixed' | 'error'
+export const dynamic = 'force-dynamic'
+  type GpsStatus = 'idle' | 'acquiring' | 'fixed' | 'error'
 
 interface GeoData {
   latitude: number
