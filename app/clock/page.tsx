@@ -15,47 +15,6 @@ import {
   generateSessionId,
 } from '@/lib/timeUtils'
 
-export const dynamic = 'force-dynamic'
-
-type GpsStatus = 'idle' | 'acquiring' | 'fixed' | 'error'
-
-interface GeoData {
-  latitude: number
-  longitude: number
-  accuracy: number
-}
-
-async function getLocation(): Promise<GeoData | null> {
-  return new Promise(resolve => {
-    if (!navigator.geolocation) { resolve(null); return }
-    navigator.geolocation.getCurrentPosition(
-      pos => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy }),
-      () => resolve(null),
-      { enableHighAccuracy: true, timeout: 8000 }
-    )
-  })
-}
-
-async function logEvent(
-  sessionId: string,
-  eventType: 'start' | 'pause' | 'resume' | 'end',
-  geo: GeoData | null
-) {
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return
-
-  await supabase.from('time_logs').insert({
-    user_id: user.id,
-    session_id: sessionId,
-    event_type: eventType,
-    latitude: geo?.latitude ?? null,
-    longitude: geo?.longitude ?? null,
-    accuracy: geo?.accuracy ?? null,
-    timestamp: new Date().toISOString(),
-    server_timestamp: new Date().toISOString(),
-  })
-}
-
 export default function ClockPage() {
   const router = useRouter()
   const [isAuthLoading, setIsAuthLoading] = useState(true)
@@ -77,30 +36,33 @@ export default function ClockPage() {
   const intervalRef = useRef<NodeJS.Timeout | null>(null)
   const notifiedRef = useRef({ at4h: false, at8h: false })
 
-  // --- PROTECCIÓN DE RUTA ---
+  // --- PROTECCIÓN DE RUTA (SIN MIDDLEWARE) ---
   useEffect(() => {
     const checkUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) {
-        router.push('/profile') // Ajusta esta ruta a tu pantalla de Login
-      } else {
-        setIsAuthLoading(false)
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) {
+          router.push('/profile') 
+        } else {
+          setIsAuthLoading(false)
+        }
+      } catch (error) {
+        router.push('/profile')
       }
     }
     checkUser()
   }, [router])
 
-  // Load persisted state
+  // Carga de estado persistido
   useEffect(() => {
     if (isAuthLoading) return
     const saved = loadClockState()
     if (saved && saved.status !== 'ended' && saved.status !== 'idle') {
       setState(saved)
-      notifiedRef.current = { at4h: false, at8h: false }
     }
   }, [isAuthLoading])
 
-  // Acquire GPS on mount
+  // GPS inicial
   useEffect(() => {
     if (isAuthLoading) return
     setGpsStatus('acquiring')
@@ -110,7 +72,7 @@ export default function ClockPage() {
     })
   }, [isAuthLoading])
 
-  // Tick logic
+  // Lógica del segundero
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current)
 
@@ -118,17 +80,6 @@ export default function ClockPage() {
       intervalRef.current = setInterval(() => {
         const elapsed = computeElapsed(state)
         setDisplay(formatDurationWithSeconds(elapsed))
-
-        if (state.status === 'running') {
-          if (elapsed >= 13500 && !notifiedRef.current.at4h) { // 3h 45min
-            notifiedRef.current.at4h = true
-            sendNotification('⏰ Aviso: 15min para descanso', 'Art. 34 ET')
-          }
-          if (elapsed >= 27900 && !notifiedRef.current.at8h) { // 7h 45min
-            notifiedRef.current.at8h = true
-            sendNotification('⏰ Aviso: 15min para fin de jornada', 'RD 8/2019')
-          }
-        }
       }, 1000)
     } else {
       setDisplay(formatDurationWithSeconds(state.elapsedSeconds))
@@ -137,34 +88,33 @@ export default function ClockPage() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [state])
 
-  // Persist state
+  // Persistencia local
   useEffect(() => {
     if (state.status !== 'idle') saveClockState(state)
   }, [state])
 
-  function sendNotification(title: string, body: string) {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification(title, { body })
-    }
+  // Funciones de Geolocalización
+  async function getLocation(): Promise<GeoData | null> {
+    return new Promise(resolve => {
+      if (typeof window === 'undefined' || !navigator.geolocation) { resolve(null); return }
+      navigator.geolocation.getCurrentPosition(
+        pos => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 8000 }
+      )
+    })
   }
 
-  function showToast(msg: string, type: 'ok' | 'err') {
-    setToast({ msg, type })
-    setTimeout(() => setToast(null), 3000)
-  }
-
+  // Funciones de eventos
   async function handleStart() {
     if (loading) return
     setLoading(true)
-    const geo = gpsCoords ?? await getLocation()
-    if (geo) { setGpsCoords(geo); setGpsStatus('fixed') }
-
+    const geo = await getLocation()
     const sessionId = generateSessionId()
-    const now = Date.now()
     const newState: ClockState = {
       status: 'running',
       sessionId,
-      startTimestamp: now,
+      startTimestamp: Date.now(),
       pauseStartTimestamp: null,
       totalPausedSeconds: 0,
       elapsedSeconds: 0,
@@ -172,7 +122,6 @@ export default function ClockPage() {
     }
     setState(newState)
     await logEvent(sessionId, 'start', geo)
-    if ('Notification' in window) Notification.requestPermission()
     showToast('Jornada iniciada ✓', 'ok')
     setLoading(false)
   }
@@ -197,10 +146,7 @@ export default function ClockPage() {
     if (loading || state.status !== 'paused') return
     setLoading(true)
     const geo = await getLocation()
-    const pausedDuration = state.pauseStartTimestamp
-      ? Math.floor((Date.now() - state.pauseStartTimestamp) / 1000)
-      : 0
-
+    const pausedDuration = state.pauseStartTimestamp ? Math.floor((Date.now() - state.pauseStartTimestamp) / 1000) : 0
     const newState: ClockState = {
       ...state,
       status: 'running',
@@ -214,90 +160,87 @@ export default function ClockPage() {
   }
 
   async function handleEnd() {
-    if (loading || state.status === 'idle' || state.status === 'ended') return
+    if (loading || state.status === 'idle') return
     setLoading(true)
     const geo = await getLocation()
     const finalElapsed = computeElapsed(state)
-    const newState: ClockState = { ...state, status: 'ended', elapsedSeconds: finalElapsed }
-    setState(newState)
+    setState({ ...state, status: 'ended', elapsedSeconds: finalElapsed })
     await logEvent(state.sessionId!, 'end', geo)
     showToast('Jornada finalizada ✓', 'ok')
-
     setTimeout(() => {
       clearClockState()
-      setState({
-        status: 'idle', sessionId: null, startTimestamp: null,
-        pauseStartTimestamp: null, totalPausedSeconds: 0, elapsedSeconds: 0, lastEventId: null,
-      })
+      setState({ status: 'idle', sessionId: null, startTimestamp: null, pauseStartTimestamp: null, totalPausedSeconds: 0, elapsedSeconds: 0, lastEventId: null })
       setDisplay('00:00:00')
     }, 3000)
     setLoading(false)
   }
 
+  async function logEvent(sid: string, type: string, geo: GeoData | null) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    await supabase.from('time_logs').insert({
+      user_id: user.id, session_id: sid, event_type: type,
+      latitude: geo?.latitude, longitude: geo?.longitude, accuracy: geo?.accuracy,
+      timestamp: new Date().toISOString(), server_timestamp: new Date().toISOString()
+    })
+  }
+
+  function showToast(msg: string, type: 'ok' | 'err') {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 3000)
+  }
+
+  // Pantalla de carga mientras verifica sesión
   if (isAuthLoading) {
     return (
       <div className="h-screen w-full bg-black flex flex-col items-center justify-center gap-4">
         <Loader2 className="w-10 h-10 text-gold animate-spin" />
-        <p className="text-gold font-display tracking-widest text-sm">VERIFICANDO IDENTIDAD</p>
+        <p className="text-gold font-mono tracking-[0.3em] text-[10px]">AUTH_CHECKING...</p>
       </div>
     )
   }
 
-  const digitClass = state.status === 'running'
-    ? 'clock-digit animate-pulse-glow'
-    : state.status === 'paused'
-    ? 'clock-digit-paused'
-    : 'clock-digit-stopped'
-
   const [hh, mm, ss] = display.split(':')
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-black grain">
+    <div className="flex flex-col h-screen overflow-hidden bg-black grain text-white font-body">
       <div className="flex-1 relative flex flex-col px-6 py-4">
-        {/* Glow Effects */}
-        <div className={`absolute inset-0 pointer-events-none transition-opacity duration-1000 ${state.status === 'running' ? 'opacity-100' : 'opacity-0'}`}
-          style={{ background: 'radial-gradient(circle at 50% 50%, rgba(0,229,255,0.07) 0%, transparent 70%)' }} />
-        
+        {/* Logo y GPS */}
         <div className="flex justify-between items-center z-10">
           <Logo size="sm" showText />
           <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold border transition-all ${gpsStatus === 'fixed' ? 'border-cyan-active/30 bg-cyan-active/10 text-cyan-active' : 'border-white/10 text-white/40'}`}>
             <Satellite size={12} className={gpsStatus === 'fixed' ? 'animate-pulse' : ''} />
-            {gpsStatus === 'fixed' ? 'GPS FIJADO' : 'BUSCANDO GPS...'}
+            {gpsStatus === 'fixed' ? 'SATELLITE_FIX' : 'GPS_SEARCH...'}
           </div>
         </div>
 
+        {/* Reloj */}
         <div className="flex-1 flex flex-col items-center justify-center gap-8 z-10">
-           <div className="text-[10px] tracking-[0.4em] uppercase text-white/40 font-bold">
+           <div className="text-[10px] tracking-[0.4em] uppercase text-white/30 font-bold">
               {state.status === 'running' ? '● Jornada Activa' : state.status === 'paused' ? '⏸ En Pausa' : '○ Standby'}
            </div>
-
            <div className="flex items-baseline font-mono">
-              <span className={digitClass + " text-8xl"}>{hh}</span>
+              <span className={`text-8xl font-bold ${state.status === 'running' ? 'clock-digit animate-pulse-glow' : state.status === 'paused' ? 'clock-digit-paused' : 'text-white/20'}`}>{hh}</span>
               <span className="text-6xl mx-1 opacity-50 animate-tick">:</span>
-              <span className={digitClass + " text-8xl"}>{mm}</span>
+              <span className={`text-8xl font-bold ${state.status === 'running' ? 'clock-digit animate-pulse-glow' : state.status === 'paused' ? 'clock-digit-paused' : 'text-white/20'}`}>{mm}</span>
               <span className="text-4xl ml-2 opacity-30 self-end mb-3">{ss}</span>
            </div>
-
-           {gpsCoords && state.status !== 'idle' && (
-             <div className="text-[10px] font-mono text-white/20 bg-white/5 px-3 py-1 rounded-full border border-white/5">
-               {gpsCoords.latitude.toFixed(5)}, {gpsCoords.longitude.toFixed(5)} (±{Math.round(gpsCoords.accuracy)}m)
-             </div>
-           )}
         </div>
 
+        {/* Botonera */}
         <div className="space-y-4 pb-24 z-10">
           {state.status === 'idle' && (
-            <button onClick={handleStart} disabled={loading} className="w-full h-16 rounded-2xl bg-gradient-to-br from-green-600 to-green-800 text-white font-bold tracking-widest uppercase shadow-[0_0_30px_rgba(22,163,74,0.3)] active:scale-95 transition-all flex items-center justify-center gap-3">
+            <button onClick={handleStart} disabled={loading} className="w-full h-16 rounded-2xl bg-gradient-to-br from-green-600 to-green-800 font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-3 shadow-[0_0_20px_rgba(22,163,74,0.2)]">
               <Play fill="white" size={20} /> Iniciar Jornada
             </button>
           )}
 
           {state.status === 'running' && (
             <div className="flex gap-3">
-              <button onClick={handlePause} className="flex-1 h-16 rounded-2xl bg-amber-600 text-white font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
+              <button onClick={handlePause} className="flex-1 h-16 rounded-2xl bg-amber-600 font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
                 <Pause fill="white" size={20} /> Pausa
               </button>
-              <button onClick={handleEnd} className="flex-1 h-16 rounded-2xl bg-red-600 text-white font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
+              <button onClick={handleEnd} className="flex-1 h-16 rounded-2xl bg-red-600 font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
                 <Square fill="white" size={20} /> Finalizar
               </button>
             </div>
@@ -305,18 +248,14 @@ export default function ClockPage() {
 
           {state.status === 'paused' && (
             <div className="flex gap-3">
-              <button onClick={handleResume} className="flex-1 h-16 rounded-2xl bg-green-600 text-white font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
+              <button onClick={handleResume} className="flex-1 h-16 rounded-2xl bg-green-600 font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
                 <Play fill="white" size={20} /> Reanudar
               </button>
-              <button onClick={handleEnd} className="flex-1 h-16 rounded-2xl bg-red-600 text-white font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
+              <button onClick={handleEnd} className="flex-1 h-16 rounded-2xl bg-red-600 font-bold tracking-widest uppercase active:scale-95 transition-all flex items-center justify-center gap-2">
                 <Square fill="white" size={20} /> Finalizar
               </button>
             </div>
           )}
-
-          <p className="text-[9px] text-center text-white/20 tracking-tighter uppercase font-medium">
-            Registro Legal RD 8/2019 • Encriptación AES-256 • Geo-Verificado
-          </p>
         </div>
       </div>
 
@@ -331,3 +270,7 @@ export default function ClockPage() {
     </div>
   )
 }
+
+// Tipos locales para evitar errores de compilación
+type GpsStatus = 'idle' | 'acquiring' | 'fixed' | 'error'
+interface GeoData { latitude: number; longitude: number; accuracy: number }
