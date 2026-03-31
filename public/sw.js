@@ -1,125 +1,106 @@
-// Times Work · Service Worker v1.0
-const CACHE_NAME = 'times-work-v1'
+// Times Work · Service Worker v1.1
+const CACHE_NAME = 'times-work-v1.1'; // Incrementamos versión
 const STATIC_ASSETS = [
   '/',
+  '/profile',
   '/clock',
   '/history',
-  '/profile',
   '/manifest.json',
-  '/icon.png',
-]
+  '/icon-192.png',
+  '/icon-512.png',
+  '/icon.png'
+];
 
-// ── Install ──
-self.addEventListener('install', event => {
+// ── Install: Cacheamos lo esencial ──
+self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS))
-  )
-  self.skipWaiting()
-})
+    caches.open(CACHE_NAME).then((cache) => {
+      // Usamos addAll pero con catch para evitar que un recurso falte y rompa todo
+      return cache.addAll(STATIC_ASSETS).catch(err => console.warn('Falta algún recurso en el caché:', err));
+    })
+  );
+  self.skipWaiting();
+});
 
-// ── Activate ──
-self.addEventListener('activate', event => {
+// ── Activate: Limpiamos cachés antiguos ──
+self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+    caches.keys().then((keys) =>
+      Promise.all(
+        keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
+      )
     )
-  )
-  self.clients.claim()
-})
+  );
+  self.clients.claim();
+});
 
-// ── Fetch (network-first for API, cache-first for assets) ──
-self.addEventListener('fetch', event => {
-  const url = new URL(event.request.url)
+// ── Fetch: Estrategia inteligente ──
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
 
-  // Supabase API → always network
+  // 1. Ignorar peticiones de Supabase (Siempre red)
   if (url.hostname.includes('supabase.co')) {
-    event.respondWith(fetch(event.request).catch(() => new Response('offline', { status: 503 })))
-    return
+    return; 
   }
 
-  // Static assets → cache-first
+  // 2. Estrategia para assets estáticos y navegación
   event.respondWith(
-    caches.match(event.request).then(cached => {
-      if (cached) return cached
-      return fetch(event.request).then(response => {
-        if (response.ok && event.request.method === 'GET') {
-          const clone = response.clone()
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone))
+    caches.match(event.request).then((cached) => {
+      // Si está en caché, lo devolvemos, pero intentamos actualizarlo de fondo (Stale-while-revalidate)
+      const fetchPromise = fetch(event.request).then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200 && event.request.method === 'GET') {
+          const cacheClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, cacheClone));
         }
-        return response
-      }).catch(() => caches.match('/') || new Response('offline'))
-    })
-  )
-})
+        return networkResponse;
+      }).catch(() => {
+        // Si falla la red y no hay caché, mandamos a la home
+        if (event.request.mode === 'navigate') return caches.match('/');
+      });
 
-// ── Push Notifications ──
-self.addEventListener('push', event => {
-  const data = event.data?.json() || {}
+      return cached || fetchPromise;
+    })
+  );
+});
+
+// ── Notificaciones Push ──
+self.addEventListener('push', (event) => {
+  const data = event.data?.json() || {};
   const options = {
-    body: data.body || 'Times Work',
+    body: data.body || 'Recordatorio de jornada',
     icon: '/icon.png',
     badge: '/icon.png',
     vibrate: [200, 100, 200],
-    tag: data.tag || 'times-work',
-    requireInteraction: false,
+    tag: data.tag || 'times-work-alert',
+    data: { url: data.url || '/clock' },
     actions: [
-      { action: 'open', title: 'Ver jornada' },
-      { action: 'dismiss', title: 'Cerrar' },
-    ],
-    data: { url: '/clock' },
-  }
+      { action: 'open', title: 'Abrir App' }
+    ]
+  };
+
   event.waitUntil(
     self.registration.showNotification(data.title || 'Times Work', options)
-  )
-})
+  );
+});
 
-self.addEventListener('notificationclick', event => {
-  event.notification.close()
-  if (event.action === 'dismiss') return
+// ── Click en Notificación ──
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
-      const url = event.notification.data?.url || '/clock'
-      const existing = windowClients.find(c => c.url.includes(url))
-      if (existing) { existing.focus(); return }
-      return clients.openWindow(url)
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      const targetUrl = event.notification.data?.url || '/clock';
+      for (let client of windowClients) {
+        if (client.url.includes(targetUrl) && 'focus' in client) return client.focus();
+      }
+      if (clients.openWindow) return clients.openWindow(targetUrl);
     })
-  )
-})
+  );
+});
 
-// ── Background Sync for offline logs ──
-self.addEventListener('sync', event => {
+// ── Background Sync ──
+self.addEventListener('sync', (event) => {
   if (event.tag === 'sync-time-logs') {
-    event.waitUntil(syncPendingLogs())
+    console.log('[SW] Sincronizando registros pendientes...');
+    // Aquí iría la lógica de recuperar de IndexedDB y enviar a Supabase
   }
-})
-
-async function syncPendingLogs() {
-  // When back online, this will be triggered to sync any offline logs
-  // Implementation depends on IndexedDB queue setup in the app
-  console.log('[SW] Syncing pending time logs...')
-}
-
-// ── Message handler (from app for scheduled notifications) ──
-self.addEventListener('message', event => {
-  const { type, payload } = event.data || {}
-
-  if (type === 'SCHEDULE_NOTIFICATION') {
-    const { delay, title, body, tag } = payload
-    setTimeout(() => {
-      self.registration.showNotification(title, {
-        body,
-        icon: '/icon.png',
-        badge: '/icon.png',
-        vibrate: [300, 100, 300],
-        tag,
-        requireInteraction: true,
-      })
-    }, delay)
-  }
-
-  if (type === 'CANCEL_NOTIFICATIONS') {
-    self.registration.getNotifications().then(notifications => {
-      notifications.forEach(n => n.close())
-    })
-  }
-})
+});
