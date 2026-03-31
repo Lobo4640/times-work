@@ -1,16 +1,19 @@
 import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = 'https://zvirjbjzumxhzfxgmgoq.supabase.co'
+// Nota: En producción, estas claves deberían ir en un archivo .env.local
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp2aXJqYmp6dW14aHpmeGdtZ29xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4Nzc3ODIsImV4cCI6MjA5MDQ1Mzc4Mn0.59F45Ooj1aOJpWq86mxRZlop2rm7fzxWJlgpPjlWHyQ'
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    persistSession: true, // Esto es clave para la experiencia tipo App
+    persistSession: true, 
     autoRefreshToken: true,
     detectSessionInUrl: true,
+    storageKey: 'timeswork-auth-token', // Nombre personalizado para la cookie/localStorage
   },
 })
 
+// --- DEFINICIÓN DE TIPOS PARA TODO EL PROYECTO ---
 
 export type Profile = {
   id: string
@@ -23,6 +26,7 @@ export type Profile = {
   net_salary: number | null
   avatar_url: string | null
   created_at: string
+  updated_at?: string
 }
 
 export type TimeLog = {
