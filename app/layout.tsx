@@ -11,7 +11,10 @@ export const metadata: Metadata = {
     title: 'Times Work',
   },
   icons: {
-    icon: '/icon.png',
+    icon: [
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/icon-512.png', sizes: '512x512', type: 'image/png' }
+    ],
     apple: '/apple-touch-icon.png',
   },
   openGraph: {
@@ -36,25 +39,27 @@ export default function RootLayout({
 }) {
   return (
     <html lang="es" className="dark">
-      <head>
-        <meta name="mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-      </head>
-      <body className="grain bg-black overflow-hidden h-screen">
-        <div className="flex flex-col h-screen max-w-md mx-auto relative">
+      <body className="grain bg-black overflow-hidden h-screen font-sans">
+        <div className="flex flex-col h-screen max-w-md mx-auto relative shadow-2xl border-x border-white/5">
           {children}
         </div>
-        <script dangerouslySetInnerHTML={{ __html: `
-          if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-              navigator.serviceWorker.register('/sw.js').catch(console.error);
-            });
-          }
-        `}} />
+        
+        {/* Registro del Service Worker simplificado */}
+        <script 
+          dangerouslySetInnerHTML={{ 
+            __html: `
+              if ('serviceWorker' in navigator) {
+                window.addEventListener('load', function() {
+                  navigator.serviceWorker.register('/sw.js').then(function(reg) {
+                    console.log('SW registrado');
+                  }).catch(function(err) {
+                    console.log('SW error:', err);
+                  });
+                });
+              }
+            ` 
+          }} 
+        />
       </body>
     </html>
   )
